@@ -1,0 +1,15 @@
+telegram:
+  api_id: 36506376
+  api_hash: "d961313427bf4df9daf5b6970c6bc726"
+
+bot:
+  token: "8832247804:AAGG5h0Vbs5_SC6-l9RUuql6o0d3xiVgN8Q"
+
+notifications:
+  user_id: -1004311144453
+
+limits:
+  notifications_per_minute: 20
+
+health:
+  port: 8080

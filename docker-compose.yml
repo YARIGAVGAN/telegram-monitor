@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  monitor:
+    build: .
+    container_name: telegram-monitor
+    restart: always                     # автоматический перезапуск при падении
+    volumes:
+      - ./sessions:/app/sessions        # сохраняем сессию на хосте
+      - ./logs:/app/logs                # сохраняем логи на хосте
+      - ./config:/app/config            # конфигурация (можно менять без пересборки)
+      - ./.env:/app/.env                # переменные окружения
+    ports:
+      - "8080:8080"                     # health-check (если нужно внешнее)
+    environment:
+      - TZ=Europe/Moscow                # часовой пояс (по желанию)
