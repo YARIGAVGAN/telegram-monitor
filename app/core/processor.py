@@ -6,6 +6,9 @@ from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
+
+MAX_TEXT_LENGTH = 3800
+
 class MessageProcessor:
     def __init__(self, rule_engine: RuleEngine, deduplicator: Deduplicator,
                  whitelist: list, blacklist: list, user_id: int):
@@ -13,7 +16,7 @@ class MessageProcessor:
         self.deduplicator = deduplicator
         self.whitelist = whitelist
         self.blacklist = blacklist
-        self.user_id = user_id
+        self.user_id = user_id  # Сохраняем на случай, если понадобится
 
     async def process(self, message):
         text = message.text or ''
@@ -37,40 +40,39 @@ class MessageProcessor:
 
         logger.info(f"Match found in chat {chat_id}: {normalized[:50]}...")
 
-        # Получаем сущности для ссылок
+        # ---------- Получаем сущности для ссылок ----------
         try:
             chat_entity = await message.client.get_entity(chat_id)
             sender_entity = await message.client.get_entity(message.sender_id)
         except Exception as e:
             logger.error(f"Error getting entities: {e}")
+            # Упрощённое уведомление без ссылок
             notif_text = (
                 f"🔔 <b>Найдено ключевое слово</b>\n"
                 f"📌 <b>Чат:</b> {chat_id}\n"
                 f"👤 <b>Отправитель:</b> {message.sender_id}\n"
-                f"📝 <b>Текст:</b>\n{text[:500]}"
+                f"📝 <b>Текст:</b>\n"
+                f"{text[:MAX_TEXT_LENGTH]}{'…' if len(text) > MAX_TEXT_LENGTH else ''}"
             )
             await push({'text': notif_text})
-            # всё равно пытаемся переслать
-            try:
-                target_entity = await message.client.get_entity(self.user_id)
-                await message.forward_to(target_entity)
-            except Exception as e2:
-                logger.error(f"Failed to forward: {e2}")
             return
 
-        # Формируем ссылки
+        # ---------- Формируем ссылки ----------
+        # Ссылка на чат
         if hasattr(chat_entity, 'username') and chat_entity.username:
             chat_link = f"https://t.me/{chat_entity.username}"
         else:
             chat_id_abs = str(chat_id).replace('-', '')
             chat_link = f"https://t.me/c/{chat_id_abs}"
 
+        # Ссылка на отправителя
         sender_name = sender_entity.first_name or sender_entity.username or str(message.sender_id)
         if hasattr(sender_entity, 'username') and sender_entity.username:
             sender_link = f"https://t.me/{sender_entity.username}"
         else:
             sender_link = None
 
+        # Ссылка на конкретное сообщение
         if hasattr(chat_entity, 'username') and chat_entity.username:
             msg_link = f"https://t.me/{chat_entity.username}/{message.id}"
         else:
@@ -79,8 +81,15 @@ class MessageProcessor:
 
         chat_title = chat_entity.title if hasattr(chat_entity, 'title') else str(chat_id)
 
+        # ---------- Подготавливаем текст сообщения с обрезкой ----------
+        if len(text) > MAX_TEXT_LENGTH:
+            display_text = text[:MAX_TEXT_LENGTH] + "\n\n… (сообщение обрезано, слишком длинное)"
+        else:
+            display_text = text
+
+        # ---------- Собираем текст уведомления ----------
         notif_text = (
-            f"🔔 <b>Найдено ключевое слово</b>\n"
+            f"🔔 <b>Найдена возможная вакансия!</b>\n"
             f"📌 <b>Чат:</b> <a href='{chat_link}'>{chat_title}</a>\n"
             f"👤 <b>Отправитель:</b> "
         )
@@ -89,16 +98,7 @@ class MessageProcessor:
         else:
             notif_text += f"{sender_name}\n"
         notif_text += f"🔗 <b>Ссылка на сообщение:</b> <a href='{msg_link}'>перейти</a>\n"
-        notif_text += f"📝 <b>Текст:</b>\n{text[:500]}"
+        notif_text += f"📝 <b>Текст:</b>\n{display_text}"
 
-        # Отправляем шапку через бота
+        # ---------- Отправляем уведомление через бота (очередь) ----------
         await push({'text': notif_text})
-
-        # Пересылаем оригинальное сообщение в целевую группу
-        logger.info(f"Target group ID: {self.user_id}")
-        try:
-            target_entity = await message.client.get_entity(self.user_id)
-            await message.forward_to(target_entity)
-            logger.info(f"Forwarded message {message.id} to group {self.user_id}")
-        except Exception as e:
-            logger.error(f"Failed to forward message to {self.user_id}: {e}")
