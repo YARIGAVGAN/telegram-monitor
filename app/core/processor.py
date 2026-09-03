@@ -11,7 +11,7 @@ MAX_TEXT_LENGTH = 3800
 class MessageProcessor:
     def __init__(self, rule_engine: RuleEngine, deduplicator: Deduplicator,
                  whitelist: list, blacklist: list, user_id: int):
-        self.rule_engine = rule_engine
+        self.rule_engine= rule_engine
         self.deduplicator = deduplicator
         self.whitelist = whitelist
         self.blacklist = blacklist
