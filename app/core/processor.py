@@ -3,6 +3,8 @@ from app.filtering.rule_engine import RuleEngine
 from app.security.dedup import Deduplicator
 from app.notifications.queue import push
 from app.utils.logger import setup_logger
+from app.web.dashboard import add_vacancy, update_parser_status, parser_status
+from datetime import datetime
 
 logger = setup_logger(__name__)
 
@@ -39,6 +41,12 @@ class MessageProcessor:
 
         logger.info(f"Match found in chat {chat_id}: {normalized[:50]}...")
 
+        # Обновляем метрики
+        update_parser_status(
+            messages_matched=parser_status.get('messages_matched', 0) + 1,
+            last_message_at=datetime.now().isoformat()
+        )
+
         # ---------- Получаем сущности для ссылок ----------
         try:
             chat_entity = await message.client.get_entity(chat_id)
@@ -53,6 +61,16 @@ class MessageProcessor:
                 f"{text[:MAX_TEXT_LENGTH]}{'…' if len(text) > MAX_TEXT_LENGTH else ''}"
             )
             await push({'text': notif_text})
+            
+            # Сохраняем вакансию в дашборд
+            add_vacancy({
+                'chat_id': chat_id,
+                'chat_title': str(chat_id),
+                'sender_name': str(message.sender_id),
+                'text': text[:500],
+                'msg_link': '#',
+                'chat_link': '#'
+            })
             return
 
         # ---------- Определяем имя и ссылку на отправителя ----------
@@ -106,3 +124,14 @@ class MessageProcessor:
 
         # ---------- Отправка через бота ----------
         await push({'text': notif_text})
+        
+        # Сохраняем вакансию в дашборд
+        add_vacancy({
+            'chat_id': chat_id,
+            'chat_title': chat_title,
+            'chat_link': chat_link,
+            'sender_name': sender_name,
+            'sender_link': sender_link,
+            'text': display_text,
+            'msg_link': msg_link
+        })

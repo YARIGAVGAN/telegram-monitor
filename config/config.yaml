@@ -13,3 +13,6 @@ limits:
 
 health:
   port: 8080
+
+dashboard:
+  port: 8081
