@@ -11,6 +11,8 @@ from app.notifications.queue import notification_queue
 from app.notifications.sender import NotificationSender
 from app.monitoring.health import start_health_server
 from app.monitoring import metrics
+from app.web.dashboard import start_dashboard_server, update_parser_status
+from app.core.restart import run_with_auto_restart
 
 logger = setup_logger(__name__)
 
@@ -24,8 +26,8 @@ async def worker_loop(queue, sender, rate_limiter):
             logger.warning("Rate limit exceeded, dropping notification")
         queue.task_done()
 
-async def main():
-    config = load_config()
+async def parser_main(config):
+    """Основная функция парсера (без обработки исключений)"""
     rules_data = load_rules()
     whitelist, blacklist = load_chats()
 
@@ -40,6 +42,9 @@ async def main():
 
     # Запуск health-сервера
     asyncio.create_task(start_health_server(port=config['health']['port']))
+    
+    # Запуск дашборда
+    asyncio.create_task(start_dashboard_server(port=config.get('dashboard', {}).get('port', 8081)))
 
     # Запуск метрик (опционально, можно закомментировать, если не используется)
     # try:
@@ -64,8 +69,18 @@ async def main():
     logger.info("Service started, waiting for messages...")
     await client_wrapper.run_until_disconnected()
 
+async def main():
+    config = load_config()
+    await run_with_auto_restart(
+        lambda: parser_main(config),
+        bot_token=config['bot']['token'],
+        user_id=config['notifications']['user_id']
+    )
+
 if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Shutting down...")
+    except Exception as e:
+        logger.exception(f"Fatal error: {e}")

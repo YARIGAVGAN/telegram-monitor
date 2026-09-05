@@ -16,5 +16,8 @@ COPY . .
 # Создаём папки для логов и сессий (если их нет)
 RUN mkdir -p /app/logs /app/sessions
 
+# Открываем порты для health-check и дашборда
+EXPOSE 8080 8081
+
 # Указываем команду запуска
 CMD ["python", "main.py"]
