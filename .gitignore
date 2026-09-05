@@ -5,9 +5,9 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Logs
-logs/
+# Logs and temp files
 *.log
+*.tmp
 
 # Environment
 .env
@@ -22,7 +22,7 @@ node_modules/
 # Build artifacts
 dist/
 build/
-target/
+*.egg-info/
 
 # Editors
 .vscode/
@@ -30,14 +30,12 @@ target/
 *.swp
 *.swo
 
-# Testing
+# Coverage
 .coverage
 coverage/
 htmlcov/
+
+# Testing
 .pytest_cache/
 .mypy_cache/
-
-# OS
-.DS_Store
-Thumbs.db
 ```

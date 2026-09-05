@@ -298,6 +298,111 @@ async def dashboard_handler(request):
         .notification.show {
             transform: translateX(0);
         }
+        /* Modal styles */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 2000;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+        .modal-overlay.active {
+            display: flex;
+            opacity: 1;
+        }
+        .modal-content {
+            background: white;
+            border-radius: 15px;
+            width: 90%;
+            max-width: 700px;
+            max-height: 80vh;
+            overflow: hidden;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+            transform: translateY(-50px);
+            transition: transform 0.3s ease;
+        }
+        .modal-overlay.active .modal-content {
+            transform: translateY(0);
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 25px;
+            border-bottom: 2px solid #f0f0f0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .modal-header h3 {
+            margin: 0;
+            font-size: 18px;
+            font-weight: 600;
+        }
+        .modal-close {
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            color: white;
+            width: 35px;
+            height: 35px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s ease;
+        }
+        .modal-close:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+        .modal-body {
+            padding: 25px;
+            max-height: calc(80vh - 80px);
+            overflow-y: auto;
+            line-height: 1.6;
+            color: #333;
+            font-size: 15px;
+        }
+        .modal-body::-webkit-scrollbar {
+            width: 8px;
+        }
+        .modal-body::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+        .modal-body::-webkit-scrollbar-thumb {
+            background: #667eea;
+            border-radius: 4px;
+        }
+        .modal-body::-webkit-scrollbar-thumb:hover {
+            background: #764ba2;
+        }
+        .show-text-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            white-space: nowrap;
+        }
+        .show-text-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        .show-text-btn:active {
+            transform: translateY(0);
+        }
         @media (max-width: 768px) {
             .status-grid {
                 grid-template-columns: repeat(2, 1fr);
@@ -308,6 +413,13 @@ async def dashboard_handler(request):
             .vacancies-table th,
             .vacancies-table td {
                 padding: 10px;
+            }
+            .modal-content {
+                width: 95%;
+                max-height: 90vh;
+            }
+            .modal-body {
+                max-height: calc(90vh - 80px);
             }
         }
     </style>
@@ -368,6 +480,19 @@ async def dashboard_handler(request):
         ✨ Новая вакансия найдена!
     </div>
     
+    <!-- Modal for full vacancy text -->
+    <div id="modal-overlay" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">Текст вакансии</h3>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="modal-body">
+                <!-- Full text will be inserted here -->
+            </div>
+        </div>
+    </div>
+    
     <script>
         // WebSocket для realtime обновлений
         let ws = null;
@@ -426,8 +551,11 @@ async def dashboard_handler(request):
                 minute: '2-digit'
             });
             
-            // Обрезаем текст
+            // Обрезаем текст для превью
             const textPreview = vacancy.text.substring(0, 100).replace(/"/g, '&quot;');
+            // Экранируем HTML для безопасного отображения в модалке
+            const fullTextEscaped = vacancy.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+            const titleEscaped = (vacancy.chat_title || 'Вакансия').replace(/'/g, "\\'");
             
             // Создаём новую строку
             const row = document.createElement('tr');
@@ -437,7 +565,10 @@ async def dashboard_handler(request):
                 <td><a href="${vacancy.chat_link || '#'}" class="chat-link" target="_blank">${vacancy.chat_title || 'Неизвестно'}</a></td>
                 <td>${vacancy.sender_name || 'Аноним'}</td>
                 <td class="vacancy-text" title="${textPreview}">${textPreview}...</td>
-                <td><a href="${vacancy.msg_link || '#'}" class="vacancy-link" target="_blank">Открыть →</a></td>
+                <td style="display: flex; gap: 8px; align-items: center;">
+                    <button class="show-text-btn" onclick="showModal('${titleEscaped}', '${fullTextEscaped}')">Показать текст</button>
+                    <a href="${vacancy.msg_link || '#'}" class="vacancy-link" target="_blank">Открыть →</a>
+                </td>
             `;
             
             // Вставляем в начало таблицы
@@ -454,6 +585,40 @@ async def dashboard_handler(request):
                 matchedEl.textContent = parseInt(matchedEl.textContent) + 1;
             }
         }
+        
+        // Показать модальное окно с полным текстом вакансии
+        function showModal(title, fullText) {
+            const modalOverlay = document.getElementById('modal-overlay');
+            const modalTitle = document.getElementById('modal-title');
+            const modalBody = document.getElementById('modal-body');
+            
+            modalTitle.textContent = title;
+            modalBody.innerHTML = fullText;
+            modalOverlay.classList.add('active');
+            document.body.style.overflow = 'hidden'; // Блокируем прокрутку фона
+        }
+        
+        // Закрыть модальное окно
+        function closeModal() {
+            const modalOverlay = document.getElementById('modal-overlay');
+            modalOverlay.classList.remove('active');
+            document.body.style.overflow = ''; // Возвращаем прокрутку
+        }
+        
+        // Закрытие по клику вне окна
+        document.addEventListener('click', function(event) {
+            const modalOverlay = document.getElementById('modal-overlay');
+            if (event.target === modalOverlay) {
+                closeModal();
+            }
+        });
+        
+        // Закрытие по клавише Escape
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') {
+                closeModal();
+            }
+        });
         
         function showNotification() {
             const notification = document.getElementById('notification');
@@ -523,9 +688,11 @@ async def dashboard_handler(request):
             chat_link = v.get('chat_link', '#')
             chat_title = v.get('chat_title', 'Неизвестно')
             sender_name = v.get('sender_name', 'Аноним')
-            text = v.get('text', '')[:100].replace('"', '&quot;')
+            text_preview = v.get('text', '')[:100].replace('"', '&quot;')
+            full_text = v.get('text', '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('\n', '<br>')
             received_at = v.get('received_at', '')
             msg_link = v.get('msg_link', '#')
+            title_escaped = chat_title.replace("'", "\\'")
             
             if received_at:
                 try:
@@ -541,8 +708,11 @@ async def dashboard_handler(request):
                 <td><span class="timestamp">{received_at_fmt}</span></td>
                 <td><a href="{chat_link}" class="chat-link" target="_blank">{chat_title}</a></td>
                 <td>{sender_name}</td>
-                <td class="vacancy-text" title="{text}">{text}...</td>
-                <td><a href="{msg_link}" class="vacancy-link" target="_blank">Открыть →</a></td>
+                <td class="vacancy-text" title="{text_preview}">{text_preview}...</td>
+                <td style="display: flex; gap: 8px; align-items: center;">
+                    <button class="show-text-btn" onclick="showModal('{title_escaped}', '{full_text}')">Показать текст</button>
+                    <a href="{msg_link}" class="vacancy-link" target="_blank">Открыть →</a>
+                </td>
             </tr>
             """
             rows.append(row)
