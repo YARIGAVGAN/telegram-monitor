@@ -553,20 +553,22 @@ async def dashboard_handler(request):
             
             // Обрезаем текст для превью
             const textPreview = vacancy.text.substring(0, 100).replace(/"/g, '&quot;');
-            // Экранируем HTML для безопасного отображения в модалке
-            const fullTextEscaped = vacancy.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
-            const titleEscaped = (vacancy.chat_title || 'Вакансия').replace(/'/g, "\\'");
+            // Экранируем для data-атрибутов
+            const fullTextJs = vacancy.text.replace(/\\/g, '\\\\').replace(/'/g, "\\''").replace(/\n/g, '\\n');
+            const titleJs = (vacancy.chat_title || 'Вакансия').replace(/\\/g, '\\\\').replace(/'/g, "\\''");
             
-            // Создаём новую строку
+            // Создаём новую строку с data-атрибутами
             const row = document.createElement('tr');
             row.className = 'new-row';
+            row.setAttribute('data-vacancy-title', titleJs);
+            row.setAttribute('data-vacancy-text', fullTextJs);
             row.innerHTML = `
                 <td><span class="timestamp">${dateStr}</span></td>
                 <td><a href="${vacancy.chat_link || '#'}" class="chat-link" target="_blank">${vacancy.chat_title || 'Неизвестно'}</a></td>
                 <td>${vacancy.sender_name || 'Аноним'}</td>
                 <td class="vacancy-text" title="${textPreview}">${textPreview}...</td>
                 <td style="display: flex; gap: 8px; align-items: center;">
-                    <button class="show-text-btn" onclick="showModal('${titleEscaped}', '${fullTextEscaped}')">Показать текст</button>
+                    <button class="show-text-btn" onclick="showModalByRow(this)">Показать текст</button>
                     <a href="${vacancy.msg_link || '#'}" class="vacancy-link" target="_blank">Открыть →</a>
                 </td>
             `;
@@ -586,14 +588,21 @@ async def dashboard_handler(request):
             }
         }
         
-        // Показать модальное окно с полным текстом вакансии
-        function showModal(title, fullText) {
+        // Показать модальное окно с полным текстом вакансии (по кнопке)
+        function showModalByRow(btn) {
+            const row = btn.closest('tr');
+            const title = row.getAttribute('data-vacancy-title');
+            const fullText = row.getAttribute('data-vacancy-text');
+            
+            if (!title || !fullText) return;
+            
             const modalOverlay = document.getElementById('modal-overlay');
             const modalTitle = document.getElementById('modal-title');
             const modalBody = document.getElementById('modal-body');
             
             modalTitle.textContent = title;
-            modalBody.innerHTML = fullText;
+            // Преобразуем \n в <br> для отображения
+            modalBody.innerHTML = fullText.replace(/\\n/g, '<br>');
             modalOverlay.classList.add('active');
             document.body.style.overflow = 'hidden'; // Блокируем прокрутку фона
         }
@@ -684,15 +693,16 @@ async def dashboard_handler(request):
     vacancies = vacancies_store[:100]  # Показываем последние 100
     if vacancies:
         rows = []
-        for v in vacancies:
+        for idx, v in enumerate(vacancies):
             chat_link = v.get('chat_link', '#')
             chat_title = v.get('chat_title', 'Неизвестно')
             sender_name = v.get('sender_name', 'Аноним')
             text_preview = v.get('text', '')[:100].replace('"', '&quot;')
-            full_text = v.get('text', '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('\n', '<br>')
+            # Экранируем для data-атрибутов (JS строка)
+            full_text_js = v.get('text', '').replace('\\', '\\\\').replace("'", "\\''").replace('\n', '\\n').replace('\r', '\\r')
+            title_js = chat_title.replace('\\', '\\\\').replace("'", "\\''")
             received_at = v.get('received_at', '')
             msg_link = v.get('msg_link', '#')
-            title_escaped = chat_title.replace("'", "\\'")
             
             if received_at:
                 try:
@@ -704,13 +714,13 @@ async def dashboard_handler(request):
                 received_at_fmt = 'Неизвестно'
             
             row = f"""
-            <tr>
+            <tr data-vacancy-title="{title_js}" data-vacancy-text="{full_text_js}">
                 <td><span class="timestamp">{received_at_fmt}</span></td>
                 <td><a href="{chat_link}" class="chat-link" target="_blank">{chat_title}</a></td>
                 <td>{sender_name}</td>
                 <td class="vacancy-text" title="{text_preview}">{text_preview}...</td>
                 <td style="display: flex; gap: 8px; align-items: center;">
-                    <button class="show-text-btn" onclick="showModal('{title_escaped}', '{full_text}')">Показать текст</button>
+                    <button class="show-text-btn" onclick="showModalByRow(this)">Показать текст</button>
                     <a href="{msg_link}" class="vacancy-link" target="_blank">Открыть →</a>
                 </td>
             </tr>
