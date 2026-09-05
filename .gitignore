@@ -4,37 +4,40 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-.Python
-env/
+
+# Logs
+logs/
+*.log
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Dependencies
+.venv/
 venv/
-.venv/
-.ENV
-.ENV.*
-.venv/
-.venv.*
-.python-version
-.python_history
+node_modules/
+
+# Build artifacts
+dist/
+build/
+target/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing
+.coverage
+coverage/
+htmlcov/
 .pytest_cache/
 .mypy_cache/
 
-# Logs
-*.log
-
-# Environment variables
-.env
-.env.local
-.env.*
-
-# Docker
-.dockerenv
-Dockerfile*
-
-# OS generated files
+# OS
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
 ```

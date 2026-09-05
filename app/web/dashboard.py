@@ -5,7 +5,7 @@ from aiohttp import web
 import asyncio
 import json
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Set
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -23,17 +23,46 @@ parser_status = {
     "last_error": None
 }
 
+# WebSocket подключения для realtime обновлений
+websocket_connections: Set[web.WebSocketResponse] = set()
+
 MAX_VACANCIES = 500  # Максимальное количество хранимых вакансий
 
 
 def add_vacancy(vacancy: Dict[str, Any]):
-    """Добавить вакансию в хранилище"""
+    """Добавить вакансию в хранилище и уведомить WebSocket клиентов"""
     global vacancies_store
     vacancy['received_at'] = datetime.now().isoformat()
     vacancies_store.insert(0, vacancy)
     # Ограничиваем размер хранилища
     if len(vacancies_store) > MAX_VACANCIES:
         vacancies_store = vacancies_store[:MAX_VACANCIES]
+    
+    # Уведомляем все WebSocket подключения о новой вакансии
+    try:
+        loop = asyncio.get_running_loop()
+        asyncio.create_task(broadcast_vacancy(vacancy))
+    except RuntimeError:
+        # Нет запущенного event loop (например, при тестировании)
+        pass
+
+
+async def broadcast_vacancy(vacancy: Dict[str, Any]):
+    """Отправить новую вакансию всем подключенным WebSocket клиентам"""
+    if websocket_connections:
+        message = json.dumps({
+            'type': 'new_vacancy',
+            'vacancy': vacancy
+        })
+        # Копируем множество, чтобы избежать изменения во время итерации
+        disconnected = set()
+        for ws in websocket_connections:
+            try:
+                await ws.send_str(message)
+            except Exception:
+                disconnected.add(ws)
+        # Удаляем отключенные подключения
+        websocket_connections.difference_update(disconnected)
 
 
 def update_parser_status(**kwargs):
@@ -41,6 +70,31 @@ def update_parser_status(**kwargs):
     for key, value in kwargs.items():
         if key in parser_status:
             parser_status[key] = value
+
+
+async def websocket_handler(request):
+    """WebSocket endpoint для realtime обновлений"""
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    
+    # Добавляем подключение к множеству
+    websocket_connections.add(ws)
+    logger.info(f"WebSocket client connected. Total connections: {len(websocket_connections)}")
+    
+    try:
+        async for msg in ws:
+            if msg.type == web.WSMsgType.TEXT:
+                # Обрабатываем входящие сообщения (если нужно)
+                data = json.loads(msg.data)
+                if data.get('type') == 'ping':
+                    await ws.send_str(json.dumps({'type': 'pong'}))
+            elif msg.type == web.WSMsgType.ERROR:
+                logger.error(f'WebSocket connection closed with exception: {ws.exception()}')
+    finally:
+        websocket_connections.discard(ws)
+        logger.info(f"WebSocket client disconnected. Total connections: {len(websocket_connections)}")
+    
+    return ws
 
 
 async def dashboard_handler(request):
@@ -142,18 +196,28 @@ async def dashboard_handler(request):
         .vacancies-header h2 {
             color: #333;
         }
-        .refresh-btn {
-            background: #667eea;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 8px;
-            cursor: pointer;
+        .live-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: #d4edda;
+            border-radius: 20px;
             font-size: 14px;
-            transition: background 0.3s;
+            color: #155724;
+            font-weight: 600;
         }
-        .refresh-btn:hover {
-            background: #5a6fd6;
+        .live-dot {
+            width: 10px;
+            height: 10px;
+            background: #28a745;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+            100% { opacity: 1; transform: scale(1); }
         }
         .vacancies-table {
             width: 100%;
@@ -174,6 +238,13 @@ async def dashboard_handler(request):
         }
         .vacancies-table tr:hover {
             background: #f8f9fa;
+        }
+        .vacancies-table tr.new-row {
+            animation: highlight 2s ease-out;
+        }
+        @keyframes highlight {
+            0% { background: #d4edda; }
+            100% { background: transparent; }
         }
         .vacancy-link {
             color: #667eea;
@@ -210,6 +281,22 @@ async def dashboard_handler(request):
             height: 80px;
             margin-bottom: 20px;
             opacity: 0.5;
+        }
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #28a745;
+            color: white;
+            padding: 15px 25px;
+            border-radius: 10px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.3);
+            transform: translateX(400px);
+            transition: transform 0.3s ease;
+            z-index: 1000;
+        }
+        .notification.show {
+            transform: translateX(0);
         }
         @media (max-width: 768px) {
             .status-grid {
@@ -267,16 +354,125 @@ async def dashboard_handler(request):
         <div class="vacancies-card">
             <div class="vacancies-header">
                 <h2>📋 Последние вакансии</h2>
-                <button class="refresh-btn" onclick="location.reload()">🔄 Обновить</button>
+                <div class="live-indicator">
+                    <span class="live-dot"></span>
+                    <span>Live обновление</span>
+                </div>
             </div>
             
             {{ vacancies_table }}
         </div>
     </div>
     
+    <div id="notification" class="notification">
+        ✨ Новая вакансия найдена!
+    </div>
+    
     <script>
-        // Автообновление каждые 30 секунд
-        setTimeout(() => location.reload(), 30000);
+        // WebSocket для realtime обновлений
+        let ws = null;
+        let reconnectAttempts = 0;
+        const MAX_RECONNECT_ATTEMPTS = 10;
+        
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = function() {
+                console.log('WebSocket connected');
+                reconnectAttempts = 0;
+            };
+            
+            ws.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                
+                if (data.type === 'new_vacancy') {
+                    addNewVacancy(data.vacancy);
+                    showNotification();
+                } else if (data.type === 'pong') {
+                    // Ответ на ping
+                }
+            };
+            
+            ws.onclose = function() {
+                console.log('WebSocket disconnected');
+                // Попытка переподключения
+                if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                    reconnectAttempts++;
+                    console.log(`Reconnecting... (attempt ${reconnectAttempts})`);
+                    setTimeout(connectWebSocket, 2000 * reconnectAttempts);
+                }
+            };
+            
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+                ws.close();
+            };
+        }
+        
+        function addNewVacancy(vacancy) {
+            const tbody = document.querySelector('.vacancies-table tbody');
+            if (!tbody) return;
+            
+            // Форматируем дату
+            const receivedAt = new Date(vacancy.received_at);
+            const dateStr = receivedAt.toLocaleDateString('ru-RU', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+            
+            // Обрезаем текст
+            const textPreview = vacancy.text.substring(0, 100).replace(/"/g, '&quot;');
+            
+            // Создаём новую строку
+            const row = document.createElement('tr');
+            row.className = 'new-row';
+            row.innerHTML = `
+                <td><span class="timestamp">${dateStr}</span></td>
+                <td><a href="${vacancy.chat_link || '#'}" class="chat-link" target="_blank">${vacancy.chat_title || 'Неизвестно'}</a></td>
+                <td>${vacancy.sender_name || 'Аноним'}</td>
+                <td class="vacancy-text" title="${textPreview}">${textPreview}...</td>
+                <td><a href="${vacancy.msg_link || '#'}" class="vacancy-link" target="_blank">Открыть →</a></td>
+            `;
+            
+            // Вставляем в начало таблицы
+            tbody.insertBefore(row, tbody.firstChild);
+            
+            // Удаляем лишние строки если их больше 100
+            while (tbody.children.length > 100) {
+                tbody.removeChild(tbody.lastChild);
+            }
+            
+            // Обновляем счётчик вакансий
+            const matchedEl = document.getElementById('messages-matched');
+            if (matchedEl) {
+                matchedEl.textContent = parseInt(matchedEl.textContent) + 1;
+            }
+        }
+        
+        function showNotification() {
+            const notification = document.getElementById('notification');
+            notification.classList.add('show');
+            
+            setTimeout(() => {
+                notification.classList.remove('show');
+            }, 3000);
+        }
+        
+        // Периодический ping для поддержания соединения
+        setInterval(() => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'ping' }));
+            }
+        }, 30000);
+        
+        // Подключаемся при загрузке страницы
+        connectWebSocket();
     </script>
 </body>
 </html>
@@ -419,12 +615,14 @@ async def start_dashboard_server(port: int = 8081):
     app.router.add_get('/', dashboard_handler)
     app.router.add_get('/api/status', api_status_handler)
     app.router.add_get('/api/vacancies', api_vacancies_handler)
+    app.router.add_get('/ws', websocket_handler)
     
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     logger.info(f"Dashboard server running on http://0.0.0.0:{port}")
+    logger.info(f"WebSocket endpoint available at ws://0.0.0.0:{port}/ws")
     
     # Бесконечное ожидание
     await asyncio.Event().wait()
