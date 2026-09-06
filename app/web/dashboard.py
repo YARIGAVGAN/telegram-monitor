@@ -552,16 +552,16 @@ async def dashboard_handler(request):
             });
             
             // Обрезаем текст для превью
-            const textPreview = vacancy.text.substring(0, 100).replace(/"/g, '&quot;');
-            // Экранируем для data-атрибутов
-            const fullTextJs = vacancy.text.replace(/\\/g, '\\\\').replace(/'/g, "\\''").replace(/\n/g, '\\n');
-            const titleJs = (vacancy.chat_title || 'Вакансия').replace(/\\/g, '\\\\').replace(/'/g, "\\''");
+            const textPreview = vacancy.text.substring(0, 100).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
             
-            // Создаём новую строку с data-атрибутами
+            // Создаём новую строку, сохраняя полные данные в объекте DOM элемента
             const row = document.createElement('tr');
             row.className = 'new-row';
-            row.setAttribute('data-vacancy-title', titleJs);
-            row.setAttribute('data-vacancy-text', fullTextJs);
+            // Сохраняем полные данные вакансии прямо в элементе DOM
+            row.vacancyData = {
+                title: vacancy.chat_title || 'Вакансия',
+                text: vacancy.text
+            };
             row.innerHTML = `
                 <td><span class="timestamp">${dateStr}</span></td>
                 <td><a href="${vacancy.chat_link || '#'}" class="chat-link" target="_blank">${vacancy.chat_title || 'Неизвестно'}</a></td>
@@ -588,46 +588,43 @@ async def dashboard_handler(request):
             }
         }
         
-        // Показать модальное окно с полным текстом вакансии (по кнопке)
+// Показать модальное окно с полным текстом вакансии (по кнопке)
         function showModalByRow(btn) {
             const row = btn.closest('tr');
-            const title = row.getAttribute('data-vacancy-title');
-            const fullText = row.getAttribute('data-vacancy-text');
             
-            if (!title || !fullText) return;
+            // Пробуем получить данные из объекта DOM (для динамически добавленных строк)
+            let vacancyData = row.vacancyData;
+            
+            // Если нет, пробуем получить из data-атрибутов (для строк, загруженных при инициализации)
+            if (!vacancyData) {
+                const title = row.getAttribute('data-vacancy-title');
+                const fullText = row.getAttribute('data-vacancy-text');
+                if (title && fullText) {
+                    vacancyData = { title: title, text: fullText };
+                }
+            }
+            
+            if (!vacancyData) return;
             
             const modalOverlay = document.getElementById('modal-overlay');
             const modalTitle = document.getElementById('modal-title');
             const modalBody = document.getElementById('modal-body');
             
-            modalTitle.textContent = title;
-            // Преобразуем \n в <br> для отображения
-            modalBody.innerHTML = fullText.replace(/\\n/g, '<br>');
+            modalTitle.textContent = vacancyData.title;
+            // Преобразуем переносы строк в <br> для отображения, экранируем HTML
+            const escapedText = escapeHtml(vacancyData.text);
+            modalBody.innerHTML = escapedText.replace(/\\n/g, '<br>').replace(/\n/g, '<br>');
             modalOverlay.classList.add('active');
-            document.body.style.overflow = 'hidden'; // Блокируем прокрутку фона
+            document.body.style.overflow = 'hidden';
         }
+
         
-        // Закрыть модальное окно
-        function closeModal() {
-            const modalOverlay = document.getElementById('modal-overlay');
-            modalOverlay.classList.remove('active');
-            document.body.style.overflow = ''; // Возвращаем прокрутку
+        // Функция для экранирования HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
         }
-        
-        // Закрытие по клику вне окна
-        document.addEventListener('click', function(event) {
-            const modalOverlay = document.getElementById('modal-overlay');
-            if (event.target === modalOverlay) {
-                closeModal();
-            }
-        });
-        
-        // Закрытие по клавише Escape
-        document.addEventListener('keydown', function(event) {
-            if (event.key === 'Escape') {
-                closeModal();
-            }
-        });
         
         function showNotification() {
             const notification = document.getElementById('notification');
