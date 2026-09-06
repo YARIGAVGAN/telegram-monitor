@@ -4,11 +4,19 @@
 from aiohttp import web
 import asyncio
 import json
+import os
 from datetime import datetime
 from typing import List, Dict, Any, Set
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
+
+# Базовая аутентификация для дашборда (опционально)
+DASHBOARD_USERNAME = os.getenv('DASHBOARD_USERNAME', 'admin')
+DASHBOARD_PASSWORD = os.getenv('DASHBOARD_PASSWORD', 'changeme123')  # Смените в production!
+
+# Разрешённые origins для WebSocket (для production укажите свой домен)
+ALLOWED_ORIGINS = os.getenv('DASHBOARD_ALLOWED_ORIGINS', 'http://localhost,http://127.0.0.1').split(',')
 
 # Глобальное хранилище вакансий и статуса
 vacancies_store: List[Dict[str, Any]] = []
@@ -73,13 +81,19 @@ def update_parser_status(**kwargs):
 
 
 async def websocket_handler(request):
-    """WebSocket endpoint для realtime обновлений"""
+    """WebSocket endpoint для realtime обновлений с проверкой Origin"""
+    # Проверка Origin header для защиты от CSRF
+    origin = request.headers.get('Origin', '')
+    if origin and origin not in ALLOWED_ORIGINS:
+        logger.warning(f"WebSocket connection rejected from origin: {origin}")
+        return web.Response(status=403, text="Forbidden: Invalid Origin")
+    
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     
     # Добавляем подключение к множеству
     websocket_connections.add(ws)
-    logger.info(f"WebSocket client connected. Total connections: {len(websocket_connections)}")
+    logger.info(f"WebSocket client connected from {request.remote}. Total connections: {len(websocket_connections)}")
     
     try:
         async for msg in ws:
@@ -97,8 +111,50 @@ async def websocket_handler(request):
     return ws
 
 
+async def check_auth(request):
+    """Проверка базовой аутентификации"""
+    from aiohttp import web
+    import base64
+    
+    # Если аутентификация не настроена (дефолтный пароль), пропускаем
+    if DASHBOARD_PASSWORD == 'changeme123' and DASHBOARD_USERNAME == 'admin':
+        return None
+    
+    auth_header = request.headers.get('Authorization')
+    if not auth_header:
+        return web.Response(
+            status=401,
+            text='Unauthorized',
+            headers={'WWW-Authenticate': 'Basic realm="Dashboard"'}
+        )
+    
+    try:
+        auth_type, auth_string = auth_header.split()
+        if auth_type.lower() != 'basic':
+            raise ValueError("Invalid auth type")
+        
+        decoded = base64.b64decode(auth_string).decode('utf-8')
+        username, password = decoded.split(':', 1)
+        
+        if username != DASHBOARD_USERNAME or password != DASHBOARD_PASSWORD:
+            raise ValueError("Invalid credentials")
+    except Exception:
+        return web.Response(
+            status=401,
+            text='Unauthorized',
+            headers={'WWW-Authenticate': 'Basic realm="Dashboard"'}
+        )
+    
+    return None
+
+
 async def dashboard_handler(request):
-    """Обработчик главной страницы дашборда"""
+    """Обработчик главной страницы дашборда с проверкой аутентификации"""
+    # Проверка аутентификации (если настроена)
+    auth_response = await check_auth(request)
+    if auth_response:
+        return auth_response
+    
     html = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -106,107 +162,242 @@ async def dashboard_handler(request):
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Парсер вакансий - Дашборд</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --secondary-gradient: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            --success-gradient: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            --bg-gradient: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            --card-bg: rgba(255, 255, 255, 0.95);
+            --card-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            --text-primary: #1a1a2e;
+            --text-secondary: #666;
+            --accent-color: #667eea;
+            --success-color: #10b981;
+            --warning-color: #f59e0b;
+            --danger-color: #ef4444;
+            --border-radius: 16px;
+            --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
+
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-gradient);
             min-height: 100vh;
             padding: 20px;
+            color: var(--text-primary);
+            line-height: 1.6;
         }
+
         .container {
             max-width: 1400px;
             margin: 0 auto;
         }
+
         h1 {
             color: white;
             text-align: center;
             margin-bottom: 30px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+            font-size: clamp(1.5rem, 4vw, 2.5rem);
+            font-weight: 700;
+            text-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            flex-wrap: wrap;
         }
+
+        h1 .emoji {
+            font-size: 1.2em;
+        }
+
+        /* Status Card */
         .status-card {
-            background: white;
-            border-radius: 15px;
-            padding: 25px;
+            background: var(--card-bg);
+            backdrop-filter: blur(10px);
+            border-radius: var(--border-radius);
+            padding: clamp(20px, 4vw, 30px);
             margin-bottom: 30px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            box-shadow: var(--card-shadow);
+            border: 1px solid rgba(255, 255, 255, 0.2);
         }
-        .status-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin-top: 20px;
+
+        .status-card h2 {
+            color: var(--text-primary);
+            margin-bottom: 20px;
+            font-size: clamp(1.2rem, 3vw, 1.5rem);
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
         }
-        .status-item {
-            background: #f8f9fa;
-            padding: 20px;
-            border-radius: 10px;
-            text-align: center;
-            border-left: 4px solid #667eea;
+
+        .status-badge-container {
+            margin-bottom: 25px;
         }
-        .status-item h3 {
-            color: #666;
-            font-size: 14px;
-            margin-bottom: 10px;
-            text-transform: uppercase;
-        }
-        .status-item .value {
-            font-size: 28px;
-            font-weight: bold;
-            color: #333;
-        }
+
         .status-indicator {
-            display: inline-block;
-            padding: 8px 20px;
-            border-radius: 20px;
-            font-weight: bold;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 20px;
+            border-radius: 50px;
+            font-weight: 600;
             text-transform: uppercase;
             font-size: 14px;
+            letter-spacing: 0.5px;
+            transition: var(--transition);
         }
+
+        .status-indicator::before {
+            content: '';
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            animation: pulse-dot 2s infinite;
+        }
+
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+        }
+
         .status-running {
-            background: #d4edda;
+            background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
             color: #155724;
         }
+
+        .status-running::before {
+            background: #28a745;
+        }
+
         .status-stopped {
-            background: #f8d7da;
+            background: linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%);
             color: #721c24;
         }
-        .status-starting {
-            background: #fff3cd;
+
+        .status-stopped::before {
+            background: #dc3545;
+            animation: none;
+        }
+
+        .status-starting, .status-restarting {
+            background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%);
             color: #856404;
         }
-        .vacancies-card {
-            background: white;
-            border-radius: 15px;
-            padding: 25px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+
+        .status-starting::before, .status-restarting::before {
+            background: #ffc107;
         }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr));
+            gap: clamp(15px, 3vw, 20px);
+            margin-top: 20px;
+        }
+
+        .status-item {
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            padding: clamp(15px, 3vw, 20px);
+            border-radius: 12px;
+            text-align: center;
+            border-left: 4px solid var(--accent-color);
+            transition: var(--transition);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .status-item::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, transparent 100%);
+            opacity: 0;
+            transition: var(--transition);
+        }
+
+        .status-item:hover::before {
+            opacity: 1;
+        }
+
+        .status-item:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 12px 24px rgba(102, 126, 234, 0.2);
+        }
+
+        .status-item h3 {
+            color: var(--text-secondary);
+            font-size: 12px;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 600;
+        }
+
+        .status-item .value {
+            font-size: clamp(1.5rem, 4vw, 1.75rem);
+            font-weight: 700;
+            color: var(--text-primary);
+            word-break: break-word;
+        }
+
+        /* Vacancies Card */
+        .vacancies-card {
+            background: var(--card-bg);
+            backdrop-filter: blur(10px);
+            border-radius: var(--border-radius);
+            padding: clamp(20px, 4vw, 30px);
+            box-shadow: var(--card-shadow);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
         .vacancies-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 20px;
-            padding-bottom: 15px;
+            margin-bottom: 25px;
+            padding-bottom: 20px;
             border-bottom: 2px solid #f0f0f0;
+            flex-wrap: wrap;
+            gap: 15px;
         }
+
         .vacancies-header h2 {
-            color: #333;
+            color: var(--text-primary);
+            font-size: clamp(1.2rem, 3vw, 1.5rem);
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
         }
+
         .live-indicator {
             display: flex;
             align-items: center;
-            gap: 8px;
-            padding: 8px 16px;
-            background: #d4edda;
-            border-radius: 20px;
+            gap: 10px;
+            padding: 10px 20px;
+            background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
+            border-radius: 50px;
             font-size: 14px;
             color: #155724;
             font-weight: 600;
+            box-shadow: 0 4px 15px rgba(40, 167, 69, 0.2);
         }
+
         .live-dot {
             width: 10px;
             height: 10px;
@@ -214,212 +405,457 @@ async def dashboard_handler(request):
             border-radius: 50%;
             animation: pulse 2s infinite;
         }
+
         @keyframes pulse {
-            0% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.5; transform: scale(1.2); }
-            100% { opacity: 1; transform: scale(1); }
+            0% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(40, 167, 69, 0.4); }
+            50% { opacity: 1; transform: scale(1.3); box-shadow: 0 0 0 10px rgba(40, 167, 69, 0); }
+            100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(40, 167, 69, 0); }
         }
+
+        /* Table Styles */
+        .table-container {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            border-radius: 12px;
+            border: 1px solid #e0e0e0;
+        }
+
         .vacancies-table {
             width: 100%;
             border-collapse: collapse;
+            min-width: 800px;
         }
+
         .vacancies-table th,
         .vacancies-table td {
-            padding: 15px;
+            padding: clamp(12px, 2vw, 15px);
             text-align: left;
             border-bottom: 1px solid #f0f0f0;
         }
+
         .vacancies-table th {
-            background: #f8f9fa;
-            color: #666;
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            color: var(--text-secondary);
             font-weight: 600;
             text-transform: uppercase;
-            font-size: 12px;
+            font-size: 11px;
+            letter-spacing: 1px;
+            white-space: nowrap;
         }
-        .vacancies-table tr:hover {
-            background: #f8f9fa;
+
+        .vacancies-table tr {
+            transition: var(--transition);
         }
+
+        .vacancies-table tbody tr:hover {
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.05) 0%, rgba(118, 75, 162, 0.05) 100%);
+        }
+
         .vacancies-table tr.new-row {
-            animation: highlight 2s ease-out;
+            animation: highlight 2.5s ease-out;
         }
+
         @keyframes highlight {
-            0% { background: #d4edda; }
+            0% { background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%); }
             100% { background: transparent; }
         }
-        .vacancy-link {
-            color: #667eea;
+
+        .vacancy-link, .chat-link {
+            color: var(--accent-color);
             text-decoration: none;
             font-weight: 500;
+            transition: var(--transition);
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
         }
-        .vacancy-link:hover {
+
+        .vacancy-link:hover, .chat-link:hover {
+            color: #764ba2;
             text-decoration: underline;
         }
-        .chat-link {
-            color: #28a745;
-            text-decoration: none;
-            font-weight: 500;
-        }
+
         .vacancy-text {
-            max-width: 400px;
+            max-width: 300px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
-            color: #666;
+            color: var(--text-secondary);
             font-size: 14px;
         }
+
         .timestamp {
             color: #999;
             font-size: 13px;
+            font-weight: 500;
         }
+
         .empty-state {
             text-align: center;
-            padding: 60px 20px;
-            color: #999;
+            padding: clamp(40px, 8vw, 60px) 20px;
+            color: var(--text-secondary);
         }
+
         .empty-state svg {
-            width: 80px;
-            height: 80px;
+            width: clamp(60px, 15vw, 80px);
+            height: clamp(60px, 15vw, 80px);
             margin-bottom: 20px;
             opacity: 0.5;
+            color: var(--accent-color);
         }
+
+        .empty-state p {
+            font-size: 16px;
+            margin-top: 10px;
+        }
+
+        .empty-state p:last-child {
+            font-size: 14px;
+            opacity: 0.8;
+        }
+
+        /* Notification Toast */
         .notification {
             position: fixed;
             top: 20px;
             right: 20px;
-            background: #28a745;
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
             color: white;
-            padding: 15px 25px;
-            border-radius: 10px;
-            box-shadow: 0 5px 20px rgba(0,0,0,0.3);
-            transform: translateX(400px);
-            transition: transform 0.3s ease;
+            padding: 16px 24px;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(16, 185, 129, 0.4);
+            transform: translateX(calc(100% + 40px));
+            transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
             z-index: 1000;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-weight: 500;
+            max-width: calc(100vw - 40px);
         }
+
         .notification.show {
             transform: translateX(0);
         }
-        /* Modal styles */
+
+        .notification-icon {
+            font-size: 20px;
+        }
+
+        /* Modal Styles */
         .modal-overlay {
             position: fixed;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            background: rgba(0, 0, 0, 0.7);
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(5px);
             display: none;
             justify-content: center;
             align-items: center;
             z-index: 2000;
             opacity: 0;
             transition: opacity 0.3s ease;
+            padding: 20px;
         }
+
         .modal-overlay.active {
             display: flex;
             opacity: 1;
         }
+
         .modal-content {
             background: white;
-            border-radius: 15px;
-            width: 90%;
+            border-radius: 20px;
+            width: 100%;
             max-width: 700px;
-            max-height: 80vh;
+            max-height: 85vh;
             overflow: hidden;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
-            transform: translateY(-50px);
-            transition: transform 0.3s ease;
+            box-shadow: 0 25px 80px rgba(0, 0, 0, 0.5);
+            transform: translateY(-30px) scale(0.95);
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex;
+            flex-direction: column;
         }
+
         .modal-overlay.active .modal-content {
-            transform: translateY(0);
+            transform: translateY(0) scale(1);
         }
+
         .modal-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
             padding: 20px 25px;
             border-bottom: 2px solid #f0f0f0;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: var(--primary-gradient);
             color: white;
+            flex-shrink: 0;
         }
+
         .modal-header h3 {
             margin: 0;
             font-size: 18px;
             font-weight: 600;
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            padding-right: 15px;
         }
+
         .modal-close {
             background: rgba(255, 255, 255, 0.2);
             border: none;
             color: white;
-            width: 35px;
-            height: 35px;
+            width: 40px;
+            height: 40px;
             border-radius: 50%;
             cursor: pointer;
             font-size: 24px;
             display: flex;
             align-items: center;
             justify-content: center;
-            transition: background 0.2s ease;
+            transition: var(--transition);
+            flex-shrink: 0;
         }
+
         .modal-close:hover {
             background: rgba(255, 255, 255, 0.3);
+            transform: rotate(90deg);
         }
+
         .modal-body {
             padding: 25px;
-            max-height: calc(80vh - 80px);
             overflow-y: auto;
-            line-height: 1.6;
+            line-height: 1.8;
             color: #333;
             font-size: 15px;
+            flex: 1;
         }
+
         .modal-body::-webkit-scrollbar {
             width: 8px;
         }
+
         .modal-body::-webkit-scrollbar-track {
             background: #f1f1f1;
             border-radius: 4px;
         }
+
         .modal-body::-webkit-scrollbar-thumb {
-            background: #667eea;
+            background: var(--accent-color);
             border-radius: 4px;
         }
+
         .modal-body::-webkit-scrollbar-thumb:hover {
             background: #764ba2;
         }
+
         .show-text-btn {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: var(--primary-gradient);
             color: white;
             border: none;
-            padding: 8px 16px;
-            border-radius: 8px;
+            padding: 10px 18px;
+            border-radius: 10px;
             cursor: pointer;
             font-size: 13px;
-            font-weight: 500;
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            font-weight: 600;
+            transition: var(--transition);
             white-space: nowrap;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
         }
+
         .show-text-btn:hover {
             transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.5);
         }
+
         .show-text-btn:active {
             transform: translateY(0);
         }
-        @media (max-width: 768px) {
+
+        /* Connection Status */
+        .connection-status {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            padding: 10px 16px;
+            background: var(--card-bg);
+            border-radius: 50px;
+            box-shadow: var(--card-shadow);
+            font-size: 13px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            z-index: 900;
+            transition: var(--transition);
+        }
+
+        .connection-status.connected {
+            color: var(--success-color);
+        }
+
+        .connection-status.disconnected {
+            color: var(--danger-color);
+        }
+
+        .connection-status .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
+        .connection-status.connected .dot {
+            animation: pulse-dot 2s infinite;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 1024px) {
             .status-grid {
                 grid-template-columns: repeat(2, 1fr);
             }
-            .vacancies-table {
-                font-size: 14px;
-            }
-            .vacancies-table th,
-            .vacancies-table td {
+        }
+
+        @media (max-width: 768px) {
+            body {
                 padding: 10px;
             }
-            .modal-content {
-                width: 95%;
-                max-height: 90vh;
+
+            .status-card, .vacancies-card {
+                padding: 15px;
             }
+
+            .status-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .vacancies-header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .live-indicator {
+                align-self: flex-start;
+            }
+
+            .table-container {
+                margin: 0 -15px;
+                border-radius: 0;
+                border: none;
+            }
+
+            .vacancies-table th,
+            .vacancies-table td {
+                padding: 10px 8px;
+                font-size: 13px;
+            }
+
+            .vacancy-text {
+                max-width: 150px;
+            }
+
+            .modal-content {
+                max-height: 90vh;
+                margin: 10px;
+            }
+
+            .modal-header {
+                padding: 15px 20px;
+            }
+
             .modal-body {
-                max-height: calc(90vh - 80px);
+                padding: 20px;
+            }
+
+            .notification {
+                left: 10px;
+                right: 10px;
+                top: 10px;
+            }
+
+            .connection-status {
+                bottom: 10px;
+                left: 10px;
+                font-size: 12px;
+                padding: 8px 12px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            h1 {
+                font-size: 1.3rem;
+            }
+
+            .status-item .value {
+                font-size: 1.25rem;
+            }
+
+            .vacancies-table {
+                font-size: 12px;
+            }
+
+            .show-text-btn {
+                padding: 8px 12px;
+                font-size: 12px;
+            }
+        }
+
+        /* Dark mode support */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --card-bg: rgba(30, 30, 50, 0.95);
+                --text-primary: #f0f0f0;
+                --text-secondary: #aaa;
+            }
+
+            .status-item {
+                background: linear-gradient(135deg, #2a2a4a 0%, #1a1a3a 100%);
+            }
+
+            .vacancies-table th {
+                background: linear-gradient(135deg, #2a2a4a 0%, #1a1a3a 100%);
+            }
+
+            .vacancies-table td {
+                border-bottom-color: #3a3a5a;
+            }
+
+            .vacancies-table tbody tr:hover {
+                background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
+            }
+        }
+
+        /* Loading skeleton */
+        .skeleton {
+            background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+            background-size: 200% 100%;
+            animation: loading 1.5s infinite;
+            border-radius: 4px;
+        }
+
+        @keyframes loading {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+
+        /* Print styles */
+        @media print {
+            body {
+                background: white;
+                padding: 0;
+            }
+
+            .status-card, .vacancies-card {
+                box-shadow: none;
+                border: 1px solid #ddd;
+            }
+
+            .notification, .connection-status, .live-indicator {
+                display: none;
             }
         }
     </style>
@@ -429,8 +865,8 @@ async def dashboard_handler(request):
         <h1>🔍 Парсер вакансий - Мониторинг</h1>
         
         <div class="status-card">
-            <h2 style="color: #333; margin-bottom: 15px;">Статус парсера</h2>
-            <div style="margin-bottom: 20px;">
+            <h2>📊 Статус парсера</h2>
+            <div class="status-badge-container">
                 <span id="status-indicator" class="status-indicator status-{{ status }}">
                     {{ status_display }}
                 </span>
@@ -477,15 +913,22 @@ async def dashboard_handler(request):
     </div>
     
     <div id="notification" class="notification">
-        ✨ Новая вакансия найдена!
+        <span class="notification-icon">✨</span>
+        <span>Новая вакансия найдена!</span>
+    </div>
+    
+    <!-- Connection Status Indicator -->
+    <div id="connection-status" class="connection-status disconnected">
+        <span class="dot"></span>
+        <span id="connection-text">Отключено</span>
     </div>
     
     <!-- Modal for full vacancy text -->
-    <div id="modal-overlay" class="modal-overlay">
+    <div id="modal-overlay" class="modal-overlay" onclick="if(event.target === this) closeModal()">
         <div class="modal-content">
             <div class="modal-header">
                 <h3 id="modal-title">Текст вакансии</h3>
-                <button class="modal-close" onclick="closeModal()">&times;</button>
+                <button class="modal-close" onclick="closeModal()" aria-label="Закрыть">&times;</button>
             </div>
             <div class="modal-body" id="modal-body">
                 <!-- Full text will be inserted here -->
@@ -498,48 +941,112 @@ async def dashboard_handler(request):
         let ws = null;
         let reconnectAttempts = 0;
         const MAX_RECONNECT_ATTEMPTS = 10;
+        let connectionCheckInterval = null;
+        let isConnecting = false;
+        
+        // Обновление статуса подключения
+        function updateConnectionStatus(connected) {
+            const statusEl = document.getElementById('connection-status');
+            const textEl = document.getElementById('connection-text');
+            
+            if (connected) {
+                statusEl.className = 'connection-status connected';
+                textEl.textContent = 'Live подключено';
+            } else {
+                statusEl.className = 'connection-status disconnected';
+                textEl.textContent = isConnecting ? 'Подключение...' : 'Отключено';
+            }
+        }
         
         function connectWebSocket() {
+            if (isConnecting || (ws && ws.readyState === WebSocket.OPEN)) {
+                return;
+            }
+            
+            isConnecting = true;
+            updateConnectionStatus(false);
+            
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${protocol}//${window.location.host}/ws`;
             
+            console.log('Connecting to WebSocket:', wsUrl);
             ws = new WebSocket(wsUrl);
             
             ws.onopen = function() {
                 console.log('WebSocket connected');
                 reconnectAttempts = 0;
+                isConnecting = false;
+                updateConnectionStatus(true);
+                
+                // Запускаем периодический ping
+                if (connectionCheckInterval) {
+                    clearInterval(connectionCheckInterval);
+                }
+                connectionCheckInterval = setInterval(() => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'ping' }));
+                    }
+                }, 30000);
             };
             
             ws.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                
-                if (data.type === 'new_vacancy') {
-                    addNewVacancy(data.vacancy);
-                    showNotification();
-                } else if (data.type === 'pong') {
-                    // Ответ на ping
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'new_vacancy') {
+                        addNewVacancy(data.vacancy);
+                        showNotification();
+                    } else if (data.type === 'pong') {
+                        // Ответ на ping - соединение активно
+                        console.log('WebSocket heartbeat OK');
+                    }
+                } catch (e) {
+                    console.error('Error parsing WebSocket message:', e);
                 }
             };
             
-            ws.onclose = function() {
-                console.log('WebSocket disconnected');
-                // Попытка переподключения
+            ws.onclose = function(event) {
+                console.log('WebSocket disconnected', event.code, event.reason);
+                isConnecting = false;
+                updateConnectionStatus(false);
+                
+                // Очищаем интервал ping
+                if (connectionCheckInterval) {
+                    clearInterval(connectionCheckInterval);
+                    connectionCheckInterval = null;
+                }
+                
+                // Попытка переподключения с экспоненциальной задержкой
                 if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
                     reconnectAttempts++;
-                    console.log(`Reconnecting... (attempt ${reconnectAttempts})`);
-                    setTimeout(connectWebSocket, 2000 * reconnectAttempts);
+                    const delay = Math.min(2000 * reconnectAttempts, 30000);
+                    console.log(`Reconnecting... (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}, delay: ${delay}ms)`);
+                    setTimeout(connectWebSocket, delay);
+                } else {
+                    console.error('Max reconnection attempts reached');
                 }
             };
             
             ws.onerror = function(error) {
                 console.error('WebSocket error:', error);
-                ws.close();
+                isConnecting = false;
+                updateConnectionStatus(false);
             };
         }
         
         function addNewVacancy(vacancy) {
             const tbody = document.querySelector('.vacancies-table tbody');
             if (!tbody) return;
+            
+            // Проверяем, нет ли уже такой вакансии (защита от дубликатов)
+            const existingRows = tbody.querySelectorAll('tr');
+            for (let row of existingRows) {
+                const msgLink = row.querySelector('.vacancy-link');
+                if (msgLink && msgLink.href === vacancy.msg_link) {
+                    console.log('Duplicate vacancy detected, skipping');
+                    return;
+                }
+            }
             
             // Форматируем дату
             const receivedAt = new Date(vacancy.received_at);
@@ -564,12 +1071,12 @@ async def dashboard_handler(request):
             };
             row.innerHTML = `
                 <td><span class="timestamp">${dateStr}</span></td>
-                <td><a href="${vacancy.chat_link || '#'}" class="chat-link" target="_blank">${vacancy.chat_title || 'Неизвестно'}</a></td>
+                <td><a href="${vacancy.chat_link || '#'}" class="chat-link" target="_blank" rel="noopener noreferrer">${vacancy.chat_title || 'Неизвестно'}</a></td>
                 <td>${vacancy.sender_name || 'Аноним'}</td>
                 <td class="vacancy-text" title="${textPreview}">${textPreview}...</td>
                 <td style="display: flex; gap: 8px; align-items: center;">
                     <button class="show-text-btn" onclick="showModalByRow(this)">Показать текст</button>
-                    <a href="${vacancy.msg_link || '#'}" class="vacancy-link" target="_blank">Открыть →</a>
+                    <a href="${vacancy.msg_link || '#'}" class="vacancy-link" target="_blank" rel="noopener noreferrer">Открыть →</a>
                 </td>
             `;
             
@@ -588,7 +1095,7 @@ async def dashboard_handler(request):
             }
         }
         
-// Показать модальное окно с полным текстом вакансии (по кнопке)
+        // Показать модальное окно с полным текстом вакансии (по кнопке)
         function showModalByRow(btn) {
             const row = btn.closest('tr');
             
@@ -618,9 +1125,16 @@ async def dashboard_handler(request):
             document.body.style.overflow = 'hidden';
         }
 
+        // Закрытие модального окна
+        function closeModal() {
+            const modalOverlay = document.getElementById('modal-overlay');
+            modalOverlay.classList.remove('active');
+            document.body.style.overflow = '';
+        }
         
-        // Функция для экранирования HTML
+        // Функция для экранирования HTML (защита от XSS)
         function escapeHtml(text) {
+            if (!text) return '';
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
@@ -630,20 +1144,30 @@ async def dashboard_handler(request):
             const notification = document.getElementById('notification');
             notification.classList.add('show');
             
+            // Воспроизводим тихий звук уведомления (опционально)
+            try {
+                const audio = new Audio('data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU');
+                audio.volume = 0.1;
+                audio.play().catch(() => {});
+            } catch (e) {}
+            
             setTimeout(() => {
                 notification.classList.remove('show');
             }, 3000);
         }
         
-        // Периодический ping для поддержания соединения
-        setInterval(() => {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'ping' }));
+        // Обработка закрытия страницы
+        window.addEventListener('beforeunload', () => {
+            if (ws) {
+                ws.close();
             }
-        }, 30000);
+            if (connectionCheckInterval) {
+                clearInterval(connectionCheckInterval);
+            }
+        });
         
         // Подключаемся при загрузке страницы
-        connectWebSocket();
+        document.addEventListener('DOMContentLoaded', connectWebSocket);
     </script>
 </body>
 </html>
@@ -770,7 +1294,11 @@ async def dashboard_handler(request):
 
 
 async def api_status_handler(request):
-    """API endpoint для получения статуса в JSON"""
+    """API endpoint для получения статуса в JSON с проверкой аутентификации"""
+    auth_response = await check_auth(request)
+    if auth_response:
+        return auth_response
+    
     return web.json_response({
         'status': parser_status,
         'vacancies_count': len(vacancies_store)
@@ -778,7 +1306,11 @@ async def api_status_handler(request):
 
 
 async def api_vacancies_handler(request):
-    """API endpoint для получения списка вакансий"""
+    """API endpoint для получения списка вакансий с проверкой аутентификации"""
+    auth_response = await check_auth(request)
+    if auth_response:
+        return auth_response
+    
     limit = int(request.query.get('limit', 100))
     return web.json_response({
         'vacancies': vacancies_store[:limit],
