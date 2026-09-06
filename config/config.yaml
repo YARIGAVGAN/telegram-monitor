@@ -1,12 +1,12 @@
 telegram:
-  api_id: 36506376
-  api_hash: "d961313427bf4df9daf5b6970c6bc726"
+  api_id: ${API_ID}
+  api_hash: "${API_HASH}"
 
 bot:
-  token: "8832247804:AAGG5h0Vbs5_SC6-l9RUuql6o0d3xiVgN8Q"
+  token: "${BOT_TOKEN}"
 
 notifications:
-  user_id: -1004311144453
+  user_id: ${USER_ID}
 
 limits:
   notifications_per_minute: 20
