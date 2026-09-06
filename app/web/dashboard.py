@@ -81,12 +81,18 @@ def update_parser_status(**kwargs):
 
 
 async def websocket_handler(request):
-    """WebSocket endpoint для realtime обновлений с проверкой Origin"""
+    """WebSocket endpoint для realtime обновлений с проверкой Origin и аутентификации"""
     # Проверка Origin header для защиты от CSRF
     origin = request.headers.get('Origin', '')
     if origin and origin not in ALLOWED_ORIGINS:
         logger.warning(f"WebSocket connection rejected from origin: {origin}")
         return web.Response(status=403, text="Forbidden: Invalid Origin")
+    
+    # Проверка аутентификации (если настроена)
+    auth_response = await check_auth(request)
+    if auth_response:
+        logger.warning(f"WebSocket authentication failed from {request.remote}")
+        return auth_response
     
     ws = web.WebSocketResponse()
     await ws.prepare(request)
@@ -1319,8 +1325,91 @@ async def api_vacancies_handler(request):
 
 
 async def start_dashboard_server(port: int = 8081):
-    """Запуск веб-сервера дашборда"""
+    """Запуск веб-сервера дашборда с CORS и security middleware"""
+    from aiohttp_security import setup, SessionIdentityPolicy
+    from aiohttp_session import setup as setup_session, CookieStorage
+    import secrets
+    
     app = web.Application()
+    
+    # Настройка сессий для CSRF защиты
+    secret_key = secrets.token_hex(32).encode()
+    setup_session(app, CookieStorage(secret_key))
+    
+    # Добавляем CORS middleware
+    @web.middleware
+    async def cors_middleware(request, handler):
+        if request.method == 'OPTIONS':
+            response = web.Response()
+        else:
+            response = await handler(request)
+        
+        origin = request.headers.get('Origin', '')
+        if origin in ALLOWED_ORIGINS or not origin:
+            response.headers['Access-Control-Allow-Origin'] = origin or '*'
+            response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+            response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
+        
+        return response
+    
+    app.middlewares.append(cors_middleware)
+    
+    # Rate limiting middleware для защиты от DoS
+    from collections import defaultdict
+    import time
+    
+    rate_limit_store = defaultdict(list)
+    
+    @web.middleware
+    async def rate_limit_middleware(request, handler):
+        # Не применяем rate limit к WebSocket
+        if request.path == '/ws':
+            return await handler(request)
+        
+        client_ip = request.remote or 'unknown'
+        now = time.time()
+        
+        # Очищаем старые записи (старше 60 секунд)
+        rate_limit_store[client_ip] = [t for t in rate_limit_store[client_ip] if now - t < 60]
+        
+        # Проверяем лимит (100 запросов в минуту)
+        if len(rate_limit_store[client_ip]) >= 100:
+            logger.warning(f"Rate limit exceeded for IP: {client_ip}")
+            return web.Response(status=429, text="Too Many Requests")
+        
+        rate_limit_store[client_ip].append(now)
+        return await handler(request)
+    
+    app.middlewares.append(rate_limit_middleware)
+    
+    # Security headers middleware
+    @web.middleware
+    async def security_headers_middleware(request, handler):
+        response = await handler(request)
+        
+        # Добавляем security headers
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        response.headers['X-Frame-Options'] = 'DENY'
+        response.headers['X-XSS-Protection'] = '1; mode=block'
+        response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+        
+        # Content Security Policy
+        csp = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com; "
+            "font-src https://fonts.gstatic.com; "
+            "connect-src 'self' ws: wss:; "
+            "img-src 'self' data:; "
+            "frame-ancestors 'none';"
+        )
+        response.headers['Content-Security-Policy'] = csp
+        
+        return response
+    
+    app.middlewares.append(security_headers_middleware)
+    
     app.router.add_get('/', dashboard_handler)
     app.router.add_get('/api/status', api_status_handler)
     app.router.add_get('/api/vacancies', api_vacancies_handler)
@@ -1332,6 +1421,7 @@ async def start_dashboard_server(port: int = 8081):
     await site.start()
     logger.info(f"Dashboard server running on http://0.0.0.0:{port}")
     logger.info(f"WebSocket endpoint available at ws://0.0.0.0:{port}/ws")
+    logger.info("Security features enabled: CORS, Rate Limiting, CSP, Security Headers")
     
     # Бесконечное ожидание
     await asyncio.Event().wait()
